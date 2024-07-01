@@ -46,6 +46,7 @@ void Web_fini()     {}
 #include "../protocol/data/NMEA.h"
 #include "../protocol/data/GDL90.h"
 #include "../protocol/data/D1090.h"
+#include "us_icao.h"
 
 #if defined(ENABLE_AHRS)
 #include "../driver/AHRS.h"
@@ -1298,7 +1299,11 @@ void handleRoot() {
   dtostrf(ThisAircraft.altitude,  7, 1, str_alt);
   dtostrf(vdd, 4, 2, str_Vcc);
 
-  snprintf_P ( Root_temp, 3000,
+  char registration[7] = "";
+  if ((settings->id_method == ADDR_TYPE_ICAO) && is_us_reg(settings->aircraft_id)) {
+    us_icao_i2n(registration, sizeof(registration), settings->aircraft_id);
+  }
+  snprintf_P ( Root_temp, 2900,
     PSTR("<html>\
   <head>\
     <meta name='viewport' content='width=device-width, initial-scale=1'>\
@@ -1314,6 +1319,7 @@ void handleRoot() {
  </table>\
  <table width=100%%>\
   <tr><th align=left>Device Id</th><td align=right>%06X</td></tr>\
+  <tr><th align=left>Registration</th><td align=right>%s</td></tr>\
   <tr><th align=left>Software Version</th><td align=right>%s&nbsp;&nbsp;%s</td></tr>"
 #if !defined(ENABLE_AHRS)
  "</table><table width=100%%>\
@@ -1378,7 +1384,7 @@ void handleRoot() {
        "<tr><td align=center><h4>(Warning: reverted to default settings)</h4></td></tr>" : ""),
     (BTpaused ?
        "<tr><td align=center><h4>(Bluetooth paused, reboot to resume)</h4></td></tr>" : ""),
-    ThisAircraft.addr, SOFTRF_FIRMWARE_VERSION,
+    ThisAircraft.addr, registration, SOFTRF_FIRMWARE_VERSION,
     (SoC == NULL ? "NONE" : SoC->name),
     GNSS_name[hw_info.gnss],
     (rf_chip   == NULL ? "NONE" : rf_chip->name),
@@ -1644,6 +1650,11 @@ void handleInput() {
   size_t size = 3800;
   char *Input_temp = (char *) malloc(size);
   if (Input_temp != NULL) {
+    char registration[7] = "";
+    if ((settings->id_method == ADDR_TYPE_ICAO) && is_us_reg(settings->aircraft_id)) {
+      us_icao_i2n(registration, sizeof(registration), settings->aircraft_id);
+    }
+
     snprintf_P ( Input_temp, size,
 PSTR("<html>\
 <head>\
@@ -1657,6 +1668,7 @@ PSTR("<html>\
 <tr><th align=left>Mode</th><td align=right>%d</td></tr>\
 <tr><th align=left>Aircraft ID</th><td align=right>%06X</td></tr>\
 <tr><th align=left>ID method</th><td align=right>%d</td></tr>\
+<tr><th align=left>Registration</th><td align=right>%s</td></tr>\
 <tr><th align=left>Ignore ID</th><td align=right>%06X</td></tr>\
 <tr><th align=left>Follow ID</th><td align=right>%06X</td></tr>\
 <tr><th align=left>Protocol</th><td align=right>%d</td></tr>\
@@ -1711,7 +1723,7 @@ PSTR("<html>\
   <p align=center><h1 align=center>Restart is in progress... Please, wait!</h1></p>\
 </body>\
 </html>"),
-    settings->mode, settings->aircraft_id, settings->id_method,
+    settings->mode, settings->aircraft_id, settings->id_method, registration,
     settings->ignore_id, settings->follow_id,
     settings->rf_protocol, settings->band,
     settings->aircraft_type, settings->alarm, settings->txpower,
