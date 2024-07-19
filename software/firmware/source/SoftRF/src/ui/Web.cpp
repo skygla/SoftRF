@@ -1307,7 +1307,7 @@ void handleRoot() {
     PSTR("<html>\
   <head>\
     <meta name='viewport' content='width=device-width, initial-scale=1'>\
-    <title>SoftRF status</title>\
+    <title>GBSC SoftRF status</title>\
   </head>\
 <body>\
  <table width=100%%>\
