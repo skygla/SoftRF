@@ -37,6 +37,7 @@ void WiFi_fini()    {}
 #include "../ui/Web.h"
 #include "../protocol/data/NMEA.h"
 #include "Battery.h"
+#include "us_icao.h"
 
 String station_ssid = MY_ACCESSPOINT_SSID ;
 String station_psk  = MY_ACCESSPOINT_PSK ;
@@ -299,9 +300,14 @@ void WiFi_setup()
 
   // Set Hostname.
   host_name += "-";
-  char chipID[8];
-  snprintf(chipID, 8, "%06x", (SoC->getChipId() & 0xFFFFFF));
-  host_name += chipID;
+  char suffix[8];
+  if (!(settings->id_method == ADDR_TYPE_ICAO &&
+        is_us_reg(settings->aircraft_id) && 
+        us_icao_i2n(suffix, sizeof(suffix), settings->aircraft_id)))
+  {
+    snprintf(suffix, sizeof(suffix), "%06x", (SoC->getChipId() & 0xFFFFFF));
+  }
+  host_name += suffix;
   SoC->WiFi_hostname(host_name);
 
   // Print hostname.

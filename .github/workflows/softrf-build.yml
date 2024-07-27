@@ -1,0 +1,36 @@
+name: softrf-build
+on: [ workflow_dispatch ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+            software/firmware/source
+      - name: before_install
+        run: |
+          sudo apt update
+          sudo apt install -y curl python3-full python3-pip zip
+          whoami
+          pip install pyserial
+      - name: install
+        run: |
+         curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+         ./bin/arduino-cli core install esp32:esp32@2.0.3
+      - name: build
+        run: |
+          ls
+          ./bin/arduino-cli compile -b esp32:esp32:esp32 -e --board-options FlashMode=dio,PartitionScheme=min_spiffs,DebugLevel=debug,PSRAM=enabled --libraries software/firmware/source/libraries software/firmware/source/SoftRF/SoftRF.ino
+          zip -j SoftRF-esp32-${{ github.refname }}.zip software/firmware/source/SoftRF/build/esp32.esp32.esp32/*
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoftRF-esp32-${{ github.refname }}
+          path: |
+            software/firmware/source/SoftRF/build/esp32.esp32.esp32/
+            SoftRF-esp32-${{ github.refname }}.zip
+        if: ${{ always() }}
