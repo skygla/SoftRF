@@ -805,7 +805,7 @@ $('form').submit(function(e){\
     server.sendHeader(String(F("Access-Control-Allow-Origin")), "*");
     server.send(200, String(F("text/plain")), (Update.hasError())?"FAIL":"OK");
 //    SoC->swSer_enableRx(true);
-    delay(1000);
+    delay(5000);
     ESP.restart();
   },[](){
     HTTPUpload& upload = server.upload();
@@ -821,6 +821,17 @@ $('form').submit(function(e){\
     } else if(upload.status == UPLOAD_FILE_WRITE){
       if(Update.write(upload.buf, upload.currentSize) != upload.currentSize){
         Update.printError(Serial);
+      }
+      else {
+        static uint16_t i = 0;
+        static uint16_t j = 0;
+        ++i;
+        if ((i >> 4) != j) { 
+          j = (i >> 4);
+          Serial.print(".");
+          if ((j & 31) == 0)
+              Serial.print("\r\n");
+        }
       }
     } else if(upload.status == UPLOAD_FILE_END){
       if(Update.end(true)){ //true to set the size to the current progress
