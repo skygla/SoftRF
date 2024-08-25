@@ -29,7 +29,7 @@ jobs:
       - name: upload
         uses: actions/upload-artifact@v4
         with:
-          name: SoftRF-esp32-${{ github.refname }}
+          name: SoftRF-esp32-${{ github.ref_name }}
           path: |
             software/firmware/source/SoftRF/build/esp32.esp32.esp32/
             software/firmware/source/SkyView/build/esp32.esp32.esp32/
