@@ -36,6 +36,8 @@
 #include <egm96s.h>
 #endif /* EXCLUDE_EGM96 */
 
+//#define DO_GNSS_DEBUG
+
 #if !defined(DO_GNSS_DEBUG)
 #define GNSS_DEBUG_PRINT
 #define GNSS_DEBUG_PRINTLN
@@ -48,10 +50,47 @@
 #define GNSS_FLUSH()        Serial_GNSS_Out.flush()
 #endif
 
-bool is_prime_mk2 = false;
+bool gnss_needs_reset = false;
 
-unsigned long GNSSTimeSyncMarker = 0;
+static bool is_prime_mk2 = false;
+
+uint32_t GNSSTimeSyncMarker = 0;
 volatile unsigned long PPS_TimeMarker = 0;
+
+#if defined(ESP32)
+static uint8_t get_pps_pin()
+{
+    if (hw_info.model == SOFTRF_MODEL_PRIME_MK3)
+        return SOC_GPIO_PIN_S3_GNSS_PPS;
+    if (hw_info.model == SOFTRF_MODEL_PRIME_MK2) {
+        if (settings->gnss_pins == EXT_GNSS_NONE) {
+            if (hw_info.revision >= 8 || settings->ppswire)
+                return SOC_GPIO_PIN_TBEAM_V08_PPS;
+        } else if (settings->ppswire) {
+            if (hw_info.revision < 8) {
+                if (settings->gnss_pins == EXT_GNSS_39_4)
+                    return SOC_GPIO_PIN_VOICE;   // pin 25 for PPS - VP is used for rx
+                if (settings->baudrate2 != BAUD_DEFAULT) {
+                    // if VP is used for aux serial, use pin 25 for PPS if possible
+                    if (settings->gnss_pins == EXT_GNSS_13_2)
+                        return SOC_GPIO_PIN_VOICE;
+                    return SOC_UNUSED_PIN;
+                }
+            } else {   // hw_info.revision >= 8
+                if (settings->sd_card == SD_CARD_13_VP) {
+                    if (settings->voice == VOICE_OFF && settings->strobe == STROBE_OFF)
+                        return SOC_GPIO_PIN_VOICE;   // pin 25 for PPS
+                    return SOC_UNUSED_PIN;
+                }
+            }
+            return Serial0AltRxPin;     // "VP" pin used for external GNSS PPS
+        }
+    }
+    return SOC_UNUSED_PIN;
+}
+#else
+static uint8_t get_pps_pin() { return SOC_GPIO_PIN_GNSS_PPS; }
+#endif
 
 const gnss_chip_ops_t *gnss_chip = NULL;
 extern const gnss_chip_ops_t goke_ops; /* forward declaration */
@@ -210,20 +249,52 @@ const uint8_t setNav5[] PROGMEM = {0xFF, 0xFF, 0x07, 0x03, 0x00, 0x00, 0x00, 0x0
                                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                    0x00, 0x00, 0x00, 0x00};
 
-const uint8_t CFG_RST[12] PROGMEM = { 0xb5, 0x62, 0x06, 0x04, 0x04, 0x00, 0x00,
-                                      0x00, 0x01, 0x00, 0x0F, 0x66};
+ /* CFG-RST */
+const uint8_t CFG_RST[12] PROGMEM = { 0xb5, 0x62, 0x06, 0x04,
+                                      0x04, 0x00,     // payload is 4 bytes
+                                      0x00, 0x00,     // navBbrMask
+                                      0x01,           // resetMode   
+                                      0x00, 0x0F, 0x66};
 
-const uint8_t CFG_RST_COLD[12] PROGMEM = { 0xB5, 0x62, 0x06, 0x04, 0x04, 0x00,
-                                           0xFF, 0xB9, 0x00, 0x00, 0xC6, 0x8B };
+ /* CFG-RST */
+//const uint8_t CFG_RST_COLD[12] PROGMEM = { 0xB5, 0x62, 0x06, 0x04,
+//                                           0x04, 0x00,     // payload is 4 bytes
+//                                           0xFF, 0xB9,     // navBbrMask
+//                                           0x00,           // resetMode 0x00 = Hardware reset
+//                                           0x00, 0xC6, 0x8B };
+
+const uint8_t CFG_RST_COLD[] PROGMEM = { 0xFF, 0xB9, 0x00, 0x00 };
 
 const uint8_t RXM_PMREQ_OFF[16] PROGMEM = {0xb5, 0x62, 0x02, 0x41, 0x08, 0x00,
                                            0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
                                            0x00, 0x00, 0x4d, 0x3b};
  /* CFG-CFG */
-const uint8_t factoryUBX[] PROGMEM = { 0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0xFF,
-                                       0xFB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                       0xFF, 0xFF, 0x00, 0x00, 0x17, 0x2B, 0x7E } ;
-
+//const uint8_t factoryUBX[] PROGMEM = { 0xB5, 0x62, 0x06, 0x09,
+//                                       0x0D, 0x00,              // payload is 13 bytes
+//                                       0xFF, 0xFB, 0x00, 0x00,  // clearMask
+//                                       0x00, 0x00, 0x00, 0x00,  // saveMask
+//                                       0xFF, 0xFF, 0x00, 0x00,  // loadMask
+//                                       0x17,                    // deviceMask
+//                                       0x2B, 0x7E } ;
+// 
+// adapted code from github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series/tree/master/examples/GPS/UBlox_Recovery
+//
+//const uint8_t cfg_clear2[] PROGMEM = {0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+//                                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x1C, 0xA2};
+const uint8_t cfg_clear2[] PROGMEM =
+ { 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 };
+//const uint8_t cfg_clear4[] PROGMEM = {0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+//                                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x1B, 0xA1};
+const uint8_t cfg_clear4[] PROGMEM =
+ { 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04 };
+//const uint8_t cfg_clear1[] PROGMEM = {0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+//                                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x1B, 0xA1};
+const uint8_t cfg_clear1[] PROGMEM =
+ { 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+//const uint8_t cfg_load3[]  PROGMEM = {0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00,
+//                                  0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x07, 0x21, 0xB7};
+const uint8_t cfg_load3[]  PROGMEM =
+ { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x07 };
 
 #if defined(USE_GNSS_PSM)
 static bool gnss_psm_active = false;
@@ -262,6 +333,12 @@ uint8_t makeUBXCFG(uint8_t cl, uint8_t id, uint8_t msglen, const uint8_t *msg)
     GNSSbuf[6+msglen] += GNSSbuf[6+i];
     GNSSbuf[7+msglen] += GNSSbuf[6+msglen];
   }
+  GNSS_DEBUG_PRINT("prepared:");
+  for (int i = 0; i < msglen+8; i++) {
+    GNSS_DEBUG_PRINT(GNSSbuf[i], HEX);
+    GNSS_DEBUG_PRINT(",");
+  }
+  GNSS_DEBUG_PRINTLN("");
   return (msglen + 8);
 }
 
@@ -270,7 +347,9 @@ static void sendUBX(const uint8_t *MSG, uint8_t len) {
   for (int i = 0; i < len; i++) {
     Serial_GNSS_Out.write( MSG[i]);
     GNSS_DEBUG_PRINT(MSG[i], HEX);
+    GNSS_DEBUG_PRINT(",");
   }
+  GNSS_DEBUG_PRINTLN("");
 //  Serial_GNSS_Out.println();
 }
 
@@ -303,11 +382,16 @@ static boolean getUBX_ACK(uint8_t cl, uint8_t id) {
     // Make sure data is available to read
     if (Serial_GNSS_In.available()) {
       b = Serial_GNSS_In.read();
+      GNSS_DEBUG_PRINT(b, HEX);
+      if (b == 0xA)
+          GNSS_DEBUG_PRINTLN("");
+      else
+          GNSS_DEBUG_PRINT(",");
 
       // Check that bytes arrive in sequence as per expected ACK packet
       if (b == GNSSbuf[ackByteID]) {
         ackByteID++;
-        GNSS_DEBUG_PRINT(b, HEX);
+        //GNSS_DEBUG_PRINT(b, HEX);
       }
       else {
         ackByteID = 0;  // Reset and look again, invalid order
@@ -501,68 +585,94 @@ static int ubloxProcessData(unsigned char data) {
 
 /* ------ END -----------  https://github.com/Black-Thunder/FPV-Tracker */
 
-static byte ublox_version() {
-  byte rval = GNSS_MODULE_NMEA;
+static bool ublox_query(uint8_t requestedClass, uint8_t requestedID, uint16_t timelimit)
+{
   unsigned long startTime = millis();
 
-  uint8_t msglen = makeUBXCFG(0x0A, 0x04, 0, NULL); // MON-VER
+Serial.println("ublox_query()...");
+
+  uint8_t msglen = makeUBXCFG(requestedClass, requestedID, 0, NULL);
+  while (Serial_GNSS_In.available() > 0) { Serial_GNSS_In.read(); }
   sendUBX(GNSSbuf, msglen);
+  yield();
+
+  int count = 1;
 
   // Get the message back from the GPS
   GNSS_DEBUG_PRINT(F(" * Reading response: "));
 
-  while ((millis() - startTime) < 2000 ) {
+  uint32_t waittime = (millis() - startTime);
+
+  while (waittime < (uint32_t) timelimit ) {
+
+    if ((waittime & 0x3F) == 0)  yield();
+    if ((waittime > 1000 && count==1) || (waittime > 2000 && count==2)) {
+Serial.println("... re-sending UBX command");
+      uint8_t msglen = makeUBXCFG(requestedClass, requestedID, 0, NULL); // MON-VER
+      while (Serial_GNSS_In.available() > 0) { Serial_GNSS_In.read(); }
+      sendUBX(GNSSbuf, msglen);
+      ++count;
+      yield();
+    }
+
+    if (waittime > timelimit-100) {
+      Serial.println("... time out");
+      break;
+    }
 
     if (Serial_GNSS_In.available()) {
+
       unsigned char c = Serial_GNSS_In.read();
-      int ret = 0;
-
       GNSS_DEBUG_PRINT(c, HEX);
-      ret = ubloxProcessData(c);
 
-      // Upon a successfully parsed sentence, do the version detection
-      if (ret) {
+      if (ubloxProcessData(c)) {
+        if (ubloxClass == requestedClass && ubloxId == requestedID)
+            return true;
+      }
+    }
 
-        if (ubloxClass == 0x0A) { // MON
-          if (ubloxId == 0x04) {  // VER
+    waittime = (millis() - startTime);
+  }
+
+  return false;
+}
+
+static byte ublox_version()
+{
+    byte rval = GNSS_MODULE_NMEA;
+    if (ublox_query(0x0A, 0x04, 3000) == false) // MON-VER
+        return rval;
 
             // UBX-MON-VER data description
             // uBlox 6  - page 166 : https://www.u-blox.com/sites/default/files/products/documents/u-blox6_ReceiverDescrProtSpec_%28GPS.G6-SW-10018%29_Public.pdf
             // uBlox 7  - page 153 : https://www.u-blox.com/sites/default/files/products/documents/u-blox7-V14_ReceiverDescriptionProtocolSpec_%28GPS.G7-SW-12001%29_Public.pdf
             // uBlox M8 - page 300 : https://www.u-blox.com/sites/default/files/products/documents/u-blox8-M8_ReceiverDescrProtSpec_%28UBX-13003221%29_Public.pdf
 
-            Serial.print(F("INFO: GNSS module HW version: "));
-            Serial.println((char *) &GNSSbuf[30]);
+    Serial.print(F("INFO: UBLOX GNSS module HW version: "));
+    Serial.println((char *) &GNSSbuf[30]);
 
-            Serial.print(F("INFO: GNSS module FW version: "));
-            Serial.println((char *) &GNSSbuf[0]);
+    Serial.print(F("INFO: UBLOX GNSS module FW version: "));
+    Serial.println((char *) &GNSSbuf[0]);
 
 #ifdef DO_GNSS_DEBUG
-            for(unsigned i = 30 + 10; i < GNSS_cnt; i+=30) {
-              Serial.print(F("INFO: GNSS module extension: "));
-              Serial.println((char *) &GNSSbuf[i]);
-            }
+    for(unsigned i = 30 + 10; i < GNSS_cnt; i+=30) {
+      Serial.print(F("INFO: GNSS module extension: "));
+      Serial.println((char *) &GNSSbuf[i]);
+    }
 #endif
 
-            if (GNSSbuf[33] == '4')
-              rval = GNSS_MODULE_U6;
-            else if (GNSSbuf[33] == '7')
-              rval = GNSS_MODULE_U7;
-            else if (GNSSbuf[33] == '8')
-              rval = GNSS_MODULE_U8;
-            else if (GNSSbuf[32] == '1' && GNSSbuf[33] == '9')
-              rval = GNSS_MODULE_U9;
-            else if (GNSSbuf[33] == 'A')
-              rval = GNSS_MODULE_U10;
+    if (GNSSbuf[33] == '4')
+      rval = GNSS_MODULE_U6;
+    else if (GNSSbuf[33] == '7')
+      rval = GNSS_MODULE_U7;
+    else if (GNSSbuf[33] == '8')
+      rval = GNSS_MODULE_U8;
+    else if (GNSSbuf[32] == '1' && GNSSbuf[33] == '9')
+      rval = GNSS_MODULE_U9;
+    else if (GNSSbuf[33] == 'A')
+      rval = GNSS_MODULE_U10;
 
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  return rval;
+    return rval;
 }
 
 static gnss_id_t ublox_probe()
@@ -654,21 +764,170 @@ const gnss_chip_ops_t ublox_ops = {
   138 /* GGA */, 67 /* RMC */
 };
 
-static void ublox_factory_reset()
+
+#if 0
+// adapted code from github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series/tree/master/examples/GPS/UBlox_Recovery
+int getAck(uint8_t requestedClass, uint8_t requestedID)
+{
+    uint16_t    ubxFrameCounter = 0;
+    bool        ubxFrame = 0;
+    uint32_t    startTime = millis();
+    uint16_t    needRead;
+
+    while (millis() - startTime < 800) {
+        while (Serial_GNSS_In.available()) {
+            int c = Serial_GNSS_In.read();
+            switch (ubxFrameCounter) {
+            case 0:
+                if (c == 0xB5) {
+                    ubxFrameCounter++;
+                }
+                break;
+            case 1:
+                if (c == 0x62) {
+                    ubxFrameCounter++;
+                } else {
+                    ubxFrameCounter = 0;
+                }
+                break;
+            case 2:
+                if (c == requestedClass) {
+                    ubxFrameCounter++;
+                } else {
+                    ubxFrameCounter = 0;
+                }
+                break;
+            case 3:
+                if (c == requestedID) {
+                    ubxFrameCounter++;
+                } else {
+                    ubxFrameCounter = 0;
+                }
+                break;
+            case 4:
+                needRead = c;
+                ubxFrameCounter++;
+                break;
+            case 5:
+                needRead |=  (c << 8);
+                ubxFrameCounter++;
+                break;
+            case 6:
+                if (needRead >= sizeof(GNSSbuf)) {
+                    ubxFrameCounter = 0;
+                    break;
+                }
+                if (Serial_GNSS_In.readBytes(GNSSbuf, needRead) != needRead) {
+                    ubxFrameCounter = 0;
+                } else {
+                    return needRead;
+                }
+                break;
+
+            default:
+                break;
+            }
+        }
+        yield();
+    }
+    return 0;
+}
+#endif
+
+static bool ublox_factory_reset()
 {
   // reset GPS to factory settings
-  for (int i = 0; i < sizeof(factoryUBX); i++) {
-    Serial_GNSS_Out.write(pgm_read_byte(&factoryUBX[i]));
-  }
+  //for (int i = 0; i < sizeof(factoryUBX); i++) {
+  //  Serial_GNSS_Out.write(pgm_read_byte(&factoryUBX[i]));
+  //}
+
+  // adapted code from:
+  //   github.com/Xinyuan-LilyGO/LilyGo-LoRa-Series/tree/master/examples/GPS/UBlox_Recovery
+  //Serial_GNSS_In.write(cfg_clear2, sizeof(cfg_clear2));   // clear flash config
+  int msglen = makeUBXCFG(0x06, 0x09, sizeof(cfg_clear2), cfg_clear2);
+  sendUBX(GNSSbuf, msglen);
+  //if (getAck(0x05, 0x01)) {
+  if (getUBX_ACK(0x06, 0x09)) {
+      Serial.println("cleared flash config");
+  } else return false;
+//  Serial_GNSS_In.write(cfg_clear4, sizeof(cfg_clear4));   // clear EEPROM config
+  msglen = makeUBXCFG(0x06, 0x09, sizeof(cfg_clear4), cfg_clear4);
+  sendUBX(GNSSbuf, msglen);
+  if (getUBX_ACK(0x06, 0x09)) {
+      Serial.println("cleared EEPROM config");
+  } else return false;
+//  Serial_GNSS_In.write(cfg_clear1, sizeof(cfg_clear1));   // clear BBR config
+  msglen = makeUBXCFG(0x06, 0x09, sizeof(cfg_clear1), cfg_clear1);
+  sendUBX(GNSSbuf, msglen);
+  if (getUBX_ACK(0x06, 0x09)) {
+      Serial.println("cleared BBR config");
+  } else return false;
+//  Serial_GNSS_In.write(cfg_load3, sizeof(cfg_load3));    // load config from all 3 devices (but not SPI)
+  msglen = makeUBXCFG(0x06, 0x09, sizeof(cfg_load3), cfg_load3);
+  sendUBX(GNSSbuf, msglen);
+  if (getUBX_ACK(0x06, 0x09)) {
+      Serial.println("UBX config reloaded");
+  } else return false;
 
   delay(600);
 
   // Cold Start (Forced Watchdog)
-  for (int i = 0; i < sizeof(CFG_RST_COLD); i++) {
-    Serial_GNSS_Out.write(pgm_read_byte(&CFG_RST_COLD[i]));
-  }
+  Serial.println("Cold-starting GNSS module...");
+  //for (int i = 0; i < sizeof(CFG_RST_COLD); i++) {
+  //  Serial_GNSS_Out.write(pgm_read_byte(&CFG_RST_COLD[i]));
+  //}
+//  Serial_GNSS_In.write(CFG_RST_COLD, sizeof(CFG_RST_COLD));
+  msglen = makeUBXCFG(0x06, 0x04, sizeof(CFG_RST_COLD), CFG_RST_COLD);
+  sendUBX(GNSSbuf, msglen);
 
   delay(1000);
+
+  return true;
+}
+
+static void reset_gnss()
+{
+    if (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ||
+        hw_info.model == SOFTRF_MODEL_PRIME_MK3) {
+#if !defined(EXCLUDE_GNSS_UBLOX)
+      if (hw_info.gnss == GNSS_MODULE_U6 ||
+          hw_info.gnss == GNSS_MODULE_U7 ||
+          hw_info.gnss == GNSS_MODULE_U8) {
+
+            Serial.println("Ublox factory reset...");
+            if (ublox_factory_reset())
+                Serial.println("... done");
+            else
+                Serial.println("... failed");
+
+      }
+#endif
+#if !defined(EXCLUDE_GNSS_AT65)
+      if (hw_info.gnss == GNSS_MODULE_AT65) {
+          if (Serial_GNSS_Out.availableForWrite() < 16)
+              delay(600);
+          if (Serial_GNSS_Out.availableForWrite() < 16) {
+              Serial.println("Serial_GNSS_Out.write() blocked?");
+              return;
+          }
+          Serial.println("AT65 factory defaults...");
+          Serial_GNSS_Out.write("$PCAS10,3*1F\r\n");   // factory defaults
+          delay(600);
+          if (Serial_GNSS_Out.availableForWrite() < 16)
+              delay(600);
+          if (Serial_GNSS_Out.availableForWrite() < 16) {
+              Serial.println("Serial_GNSS_Out.write() blocked?");
+              return;
+          }
+          Serial_GNSS_Out.write("\0");
+          delay(300);
+          Serial.println("AT65 cold start...");
+          Serial_GNSS_Out.write("$PCAS10,2*1E\r\n");   // cold start
+          delay(600);
+          Serial.println("... done");
+      }
+#endif
+    }
 }
 #endif /* EXCLUDE_GNSS_UBLOX */
 
@@ -718,7 +977,7 @@ static bool sony_setup()
   GNSSbuf[i] = 0;
 
   if (strlen((char *) &GNSSbuf[0])) {
-    Serial.print(F("INFO: GNSS module FW version: "));
+    Serial.print(F("INFO: Sony GNSS module FW version: "));
     Serial.println((char *) &GNSSbuf[0]);
   }
 
@@ -732,10 +991,10 @@ static bool sony_setup()
   /*  Positioning algorithm. This command must be issued at Idle state */
   Serial_GNSS_Out.write("@GUSE 0\r\n");    delay(250);
 
-#if SOC_GPIO_PIN_GNSS_PPS != SOC_UNUSED_PIN
-  /* Enable 1PPS output */
-  Serial_GNSS_Out.write("@GPPS 1\r\n");    delay(250);
-#endif
+ if (get_pps_pin() != SOC_UNUSED_PIN) {
+   /* Enable 1PPS output */
+   Serial_GNSS_Out.write("@GPPS 1\r\n");    delay(250);
+ }
 
 #if defined(USE_GNSS_PSM)
   if (settings->power_save & POWER_SAVE_GNSS) {
@@ -835,7 +1094,7 @@ static bool mtk_setup()
         GNSSbuf[i] = 0;
       }
     }
-    Serial.print(F("INFO: GNSS module FW version: "));
+    Serial.print(F("INFO: MTK GNSS module FW version: "));
     Serial.println((char *) &GNSSbuf[9]);
   }
 
@@ -916,7 +1175,7 @@ static bool goke_setup()
   goke_sendcmd("$PGKC242,0,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0*36\r\n");
 #endif
 
-  if (SOC_GPIO_PIN_GNSS_PPS != SOC_UNUSED_PIN) {
+  if (get_pps_pin() != SOC_UNUSED_PIN) {
     /* Enable 3D fix 1PPS output */
     goke_sendcmd("$PGKC161,2,200,1000*04\r\n");
   }
@@ -988,7 +1247,7 @@ static bool at65_setup()
         GNSSbuf[i] = 0;
       }
     }
-    Serial.print(F("INFO: GNSS module FW version: "));
+    Serial.print(F("INFO: AT65 GNSS module FW version: "));
     Serial.println((char *) &GNSSbuf[19]);
   }
 
@@ -996,7 +1255,12 @@ static bool at65_setup()
 #endif
 
   /* Assume that we deal with fake NEO module (AT6558 based) */
-  Serial_GNSS_Out.write("$PCAS04,5*1C\r\n"); /* GPS + GLONASS */     delay(250);
+  if (hw_info.model == SOFTRF_MODEL_BADGE)
+      Serial_GNSS_Out.write("$PCAS04,7*1E\r\n"); /* GPS + GLONASS + BEIDOU */
+  else
+      Serial_GNSS_Out.write("$PCAS04,5*1C\r\n"); /* GPS + GLONASS */     
+    //Serial_GNSS_Out.write("$PCAS04,7*1E\r\n"); /* GPS + GLONASS + BEIDOU */
+  delay(250);
 #if defined(NMEA_TCP_SERVICE)
   /* GGA,RMC and GSA */
   Serial_GNSS_Out.write("$PCAS03,1,0,1,0,1,0,0,0,0,0,,,0,0*03\r\n"); delay(250);
@@ -1032,11 +1296,62 @@ const gnss_chip_ops_t at65_ops = {
 
 static bool GNSS_fix_cache = false;
 
+bool leap_seconds_valid()
+{
+    static uint8_t leap_valid = 2;  // means not known whether valid
+    // could start = 0 but risk 13 minutes of no-transmit if no response
+    // - usually gets set to 0 in first check below (if no leap seconds)
+    //    - before even the first fix, so no bad transmissions happen
+
+    // this is only called if GNSS_fix_cache == true
+    switch (hw_info.gnss) {
+#if !defined(EXCLUDE_GNSS_UBLOX)
+        case GNSS_MODULE_U6:
+        case GNSS_MODULE_U7:
+        case GNSS_MODULE_U8:
+        case GNSS_MODULE_U9:
+        case GNSS_MODULE_U10:
+            static uint32_t next_check = 0;
+            static uint8_t checks_count = 0;
+            static uint8_t max_checks = 18;   // 13 minutes
+            if (leap_valid!=1 && checks_count<max_checks && (checks_count==0 || millis()>next_check)) {
+                if (ublox_query(0x01, 0x20, 2000) == true) {    // NAV-TIMEGPS
+                    if ((GNSSbuf[11] & 0x04) == 0) {
+                        leap_valid = 0;    // known invalid
+                        Serial.println("UBX says leap seconds not known yet");
+                    } else {
+                        leap_valid = 1;    // known valid, no need to ask again
+                        Serial.println("UBX says leap seconds known");
+                    }
+                } else {
+                    // (query failed) - no change in leap_valid
+                    Serial.println("No response to UBX leap seconds query");
+                }
+                next_check = millis() + 43000;
+                ++checks_count;
+                if (checks_count >= 18) {
+                    leap_valid = 2;     // in case it never works - resume transmissions
+                    max_checks = 36;    // keep trying for up to 13 more minutes
+                }
+            }
+            break;
+#endif
+        case GNSS_MODULE_AT65:
+        default:
+            return true;    // on other models assume valid
+            break;
+    }
+    return (leap_valid != 0);   // if not known invalid, assume valid
+}
+
 bool isValidGNSSFix()
 {
   if (settings->debug_flags & DEBUG_FAKEFIX)
       return true;   // for testing
-  return GNSS_fix_cache;
+  if (! GNSS_fix_cache)
+      return false;
+  return true;
+  //return leap_seconds_valid();
 }
 
 byte GNSS_setup() {
@@ -1047,6 +1362,7 @@ byte GNSS_setup() {
   gnss_id_t gnss_id = GNSS_MODULE_NONE;
 
   SoC->swSer_begin(SERIAL_IN_BR);
+  delay(500);  // added to make sure swSer is ready
 
   if (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ||
       hw_info.model == SOFTRF_MODEL_PRIME_MK3 ||
@@ -1055,18 +1371,24 @@ byte GNSS_setup() {
       hw_info.model == SOFTRF_MODEL_LEGO)
   {
     // power on by wakeup call
-    Serial_GNSS_Out.write((uint8_t) 0); GNSS_FLUSH(); delay(500);
+    Serial_GNSS_Out.write((uint8_t) 0); GNSS_FLUSH(); delay(1000);
   }
 
 #if !defined(EXCLUDE_GNSS_SONY)
-  gnss_id = gnss_id == GNSS_MODULE_NONE ?
-            (gnss_chip = &sony_ops,         gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NONE ?
+              (gnss_chip = &sony_ops,         gnss_chip->probe()) : gnss_id);
 #endif /* EXCLUDE_GNSS_SONY */
 
-  gnss_id = gnss_id == GNSS_MODULE_NONE ?
-            (gnss_chip = &generic_nmea_ops, gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NONE ?
+              (gnss_chip = &generic_nmea_ops, gnss_chip->probe()) : gnss_id);
 
-  if (gnss_id == GNSS_MODULE_NONE) {
+  gnss_id = (gnss_id == GNSS_MODULE_NONE ?   // no NMEA sentences seen - try again
+              (gnss_chip = &generic_nmea_ops, gnss_chip->probe()) : gnss_id);
+
+  gnss_id = (gnss_id == GNSS_MODULE_NONE ?   // still no NMEA sentences seen - try again
+              (gnss_chip = &generic_nmea_ops, gnss_chip->probe()) : gnss_id);
+
+  if (gnss_id == GNSS_MODULE_NONE) {     // no NMEA sentences seen in 3 trials
 
 #if !defined(EXCLUDE_GNSS_UBLOX) && defined(ENABLE_UBLOX_RFS)
     if (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ||
@@ -1081,7 +1403,7 @@ byte GNSS_setup() {
         Serial.println(F("WARNING: Misconfigured UBLOX GNSS detected!"));
         Serial.print(F("Reset to factory default state: "));
 
-        ublox_factory_reset();
+        (void) ublox_factory_reset();
 
         gnss_id = generic_nmea_ops.probe();
 
@@ -1089,48 +1411,59 @@ byte GNSS_setup() {
           Serial.println(F("FAILURE"));
           return (byte) gnss_id;
         }
-        Serial.println(F("SUCCESS"));
+        Serial.println(F("SUCCESS"));    // and fall through to probe() call below
+
       } else {
-        return (byte) gnss_id;
+        Serial.println(F("WARNING: no NMEA and Ublox GNSS not detected!"));
+        return (byte) gnss_id;    // GNSS_MODULE_NONE
       }
-    } else
+
+    } else   // not SOFTRF_MODEL_PRIME_MK*
 #endif /* EXCLUDE_GNSS_UBLOX && ENABLE_UBLOX_RFS */
 
-        return (byte) gnss_id;
+        return (byte) gnss_id;    // GNSS_MODULE_NONE
   }
 
 #if !defined(EXCLUDE_GNSS_UBLOX)
-  gnss_id = gnss_id == GNSS_MODULE_NMEA ?
-            (gnss_chip = &ublox_ops,  gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NMEA ?
+              (gnss_chip = &ublox_ops,  gnss_chip->probe()) : gnss_id);
 #endif /* EXCLUDE_GNSS_UBLOX */
 #if !defined(EXCLUDE_GNSS_MTK)
-  gnss_id = gnss_id == GNSS_MODULE_NMEA ?
-            (gnss_chip = &mtk_ops,    gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NMEA ?
+              (gnss_chip = &mtk_ops,    gnss_chip->probe()) : gnss_id);
 #endif /* EXCLUDE_GNSS_MTK */
 #if !defined(EXCLUDE_GNSS_GOKE)
-  gnss_id = gnss_id == GNSS_MODULE_NMEA ?
-            (gnss_chip = &goke_ops,   gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NMEA ?
+              (gnss_chip = &goke_ops,   gnss_chip->probe()) : gnss_id);
 #endif /* EXCLUDE_GNSS_GOKE */
 #if !defined(EXCLUDE_GNSS_AT65)
-  gnss_id = gnss_id == GNSS_MODULE_NMEA ?
-            (gnss_chip = &at65_ops,   gnss_chip->probe()) : gnss_id;
+  gnss_id = (gnss_id == GNSS_MODULE_NMEA ?
+              (gnss_chip = &at65_ops,   gnss_chip->probe()) : gnss_id);
 #endif /* EXCLUDE_GNSS_AT65 */
 
-  gnss_chip = gnss_id == GNSS_MODULE_NMEA ? &generic_nmea_ops : gnss_chip;
+  Serial.print("GNSS type found: ");
+  Serial.println(GNSS_name[gnss_id]);
+
+  gnss_chip = (gnss_id == GNSS_MODULE_NMEA ? &generic_nmea_ops : gnss_chip);
 
   if (gnss_chip) gnss_chip->setup();
 
-  if (SOC_GPIO_PIN_GNSS_PPS != SOC_UNUSED_PIN) {
-    pinMode(SOC_GPIO_PIN_GNSS_PPS, INPUT);
-#if !defined(NOT_AN_INTERRUPT)
-    attachInterrupt(digitalPinToInterrupt(SOC_GPIO_PIN_GNSS_PPS),
-                    SoC->GNSS_PPS_handler, RISING);
-#else
-    int interrupt_num = digitalPinToInterrupt(SOC_GPIO_PIN_GNSS_PPS);
-    if (interrupt_num != NOT_AN_INTERRUPT) {
-      attachInterrupt(interrupt_num, SoC->GNSS_PPS_handler, RISING);
-    }
+  uint8_t pps_pin = get_pps_pin();
+  if (pps_pin != SOC_UNUSED_PIN
+#if defined(ESP32)
+   && ESP32_pin_reserved(pps_pin, false, "GNSS PPS") == false
 #endif
+   ) {
+      pinMode(pps_pin, INPUT_PULLDOWN);
+#if !defined(NOT_AN_INTERRUPT)
+      attachInterrupt(digitalPinToInterrupt(pps_pin), SoC->GNSS_PPS_handler, RISING);
+#else
+      int interrupt_num = digitalPinToInterrupt(pps_pin);
+      if (interrupt_num != NOT_AN_INTERRUPT)
+        attachInterrupt(interrupt_num, SoC->GNSS_PPS_handler, RISING);
+#endif
+  } else {
+      settings->ppswire = false;
   }
 
 #if defined(USE_NMEALIB)
@@ -1148,6 +1481,17 @@ byte GNSS_setup() {
 
 void GNSS_loop()
 {
+#if defined(ESP32)
+  if (gnss_needs_reset) {
+      gnss_needs_reset = false;
+      reset_gnss();
+      delay(2000);
+      Serial.println("Rebooting...");
+      delay(2000);
+      reboot();
+  }
+#endif
+
   PickGNSSFix();
 
   /*
@@ -1169,11 +1513,12 @@ void GNSS_loop()
 
 void GNSS_fini()
 {
-  if (SOC_GPIO_PIN_GNSS_PPS != SOC_UNUSED_PIN) {
+  uint8_t pps_pin = get_pps_pin();
+  if (pps_pin != SOC_UNUSED_PIN) {
 #if !defined(NOT_AN_INTERRUPT)
-    detachInterrupt(digitalPinToInterrupt(SOC_GPIO_PIN_GNSS_PPS));
+    detachInterrupt(digitalPinToInterrupt(pps_pin));
 #else
-    int interrupt_num = digitalPinToInterrupt(SOC_GPIO_PIN_GNSS_PPS);
+    int interrupt_num = digitalPinToInterrupt(pps_pin);
     if (interrupt_num != NOT_AN_INTERRUPT) {
       detachInterrupt(interrupt_num);
     }
@@ -1221,8 +1566,9 @@ bool Try_GNSS_sentence() {
         for (ndx = GNSS_cnt - 4; ndx >= 0; ndx--) { // jump over CS and *
           if ((GNSSbuf[ndx] == '$') && (GNSSbuf[ndx+1] == 'G')) {
             size_t write_size = GNSS_cnt - ndx + 1;   // includes * and CS
+          char *gb = (char *) &GNSSbuf[ndx];
 #if 0
-          if (!strncmp((char *) &GNSSbuf[ndx+3], "GGA,", strlen("GGA,"))) {
+          if (!strncmp(gb+3, "GGA,", strlen("GGA,"))) {
             GGA_Stop_Time_Marker = millis();
 
             Serial.print("GGA Start: ");
@@ -1238,7 +1584,7 @@ bool Try_GNSS_sentence() {
              * Work around issue with "always 0.0,M" GGA geoid separation value
              * given by some Chinese GNSS chipsets
              */
-            bool is_gga = (write_size>7 && !strncmp((char *) &GNSSbuf[ndx+3], "GGA,", 4));
+            bool is_gga = (write_size>7 && !strncmp(gb+3, "GGA,", 4));
 #if defined(USE_NMEALIB)
             if (hw_info.model == SOFTRF_MODEL_PRIME_MK2 && is_gga
                   && gnss.separation.meters() == 0.0) {
@@ -1250,9 +1596,10 @@ bool Try_GNSS_sentence() {
 #endif
             {
               if (is_gga) {
-                strncpy(GPGGA_Copy, (char*) &GNSSbuf[ndx], write_size);  // for traffic alarm logging
+                strncpy(GPGGA_Copy, gb, write_size);  // for traffic alarm logging
+                GPGGA_Copy[write_size] = '\0';
               }
-              NMEA_Outs(settings->nmea_g, settings->nmea2_g, (char *) &GNSSbuf[ndx], write_size, true);
+              NMEA_Outs(settings->nmea_g, settings->nmea2_g, gb, write_size, true);
             }
             return true;
           }
@@ -1268,7 +1615,7 @@ void PickGNSSFix()
 
   if (is_prime_mk2) {
 
-    // only use the internal GNSS, leave other ports alone for data bridging
+    // only use the internal (or add-on serial) GNSS, leave other ports alone for data bridging
     while (true) {
       if (Serial_GNSS_In.available() > 0) {
        c = Serial_GNSS_In.read();
