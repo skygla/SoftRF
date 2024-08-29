@@ -749,7 +749,7 @@ void Web_setup()
   </head>\
 <body>\
 <body>\
- <h1 align=center>Firmware update</h1>\
+ <h1 align=center>SkyView update</h1>\
  <hr>\
  <table width=100%%>\
   <tr>\
