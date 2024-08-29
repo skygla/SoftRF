@@ -28,6 +28,8 @@
 #include "EEPROMHelper.h"
 #include "TrafficHelper.h"
 
+#include "homescreen.bmp.h"
+
 #include "SkyView.h"
 
 // GxEPD2_BW<GxEPD2_270, GxEPD2_270::HEIGHT> *display;
@@ -118,47 +120,50 @@ byte EPD_setup(bool splash_screen)
     // first update should be full refresh
     if (splash_screen) {
       display->setFont(&FreeMonoBold24pt7b);
-
       display->getTextBounds(EPD_SkyView_text1, 0, 0, &tbx1, &tby1, &tbw1, &tbh1);
       display->getTextBounds(EPD_SkyView_text2, 0, 0, &tbx2, &tby2, &tbw2, &tbh2);
 
+      display->drawBitmap(0, 0, homescreen_176x264, 176, 264, GxEPD_BLACK);
+
+      /*      
       {
         uint16_t x = (display->width() - tbw1) / 2;
-        uint16_t y = (display->height() + tbh1) / 2 - 4;
-        display->setCursor(x - (tbw1 / 3), y - tbh1);
-        display->print(EPD_SkyView_text1);
-        x = (display->width() - tbw2) / 2;
-        y = (display->height() + tbh2) / 2 - 4;
-        display->setCursor(x + (tbw2 / 7), y - (tbh2 - tbh1) );
-        display->print(EPD_SkyView_text2);
+	uint16_t y = (display->height() + tbh1) / 2 - 4;
+	display->setCursor(x - (tbw1 / 3), y - tbh1);
+	display->print(EPD_SkyView_text1);
+	x = (display->width() - tbw2) / 2;
+	y = (display->height() + tbh2) / 2 - 4;
+	display->setCursor(x + (tbw2 / 7), y - (tbh2 - tbh1) );
+	display->print(EPD_SkyView_text2);
 
-        display->setFont(&FreeMonoOblique9pt7b);
-        display->getTextBounds(EPD_SkyView_text3, 0, 0, &tbx3, &tby3, &tbw3, &tbh3);
-        x = (display->width() - tbw3) / 2;
-        y = (display->height() + tbh3) * 3 / 4 - 4;
-        display->setCursor(x, y);
-        display->print(EPD_SkyView_text3);
-        display->setFont(&FreeMonoBoldOblique9pt7b);
-        display->getTextBounds(EPD_SkyView_text4, 0, 0, &tbx4, &tby4, &tbw4, &tbh4);
-        x = (display->width() - tbw4) / 2;
-        y += tbh3;
-        y += 3;
-        display->setCursor(x, y);
-        display->print(EPD_SkyView_text4);
+	display->setFont(&FreeMonoOblique9pt7b);
+	display->getTextBounds(EPD_SkyView_text3, 0, 0, &tbx3, &tby3, &tbw3, &tbh3);
+	x = (display->width() - tbw3) / 2;
+	y = (display->height() + tbh3) * 3 / 4 - 4;
+	display->setCursor(x, y);
+	display->print(EPD_SkyView_text3);
+	display->setFont(&FreeMonoBoldOblique9pt7b);
+	display->getTextBounds(EPD_SkyView_text4, 0, 0, &tbx4, &tby4, &tbw4, &tbh4);
+	x = (display->width() - tbw4) / 2;
+	y += tbh3;
+	y += 3;
+	display->setCursor(x, y);
+	display->print(EPD_SkyView_text4);
 
-        char buf[16];
-        strcpy(buf,"version:");
-        strcat(buf,SKYVIEW_FIRMWARE_VERSION);
+	char buf[16];
+	strcpy(buf,"version:");
+	strcat(buf,SKYVIEW_FIRMWARE_VERSION);
 
-        if (hw_info.revision == HW_REV_T5S_1_9 || hw_info.revision == HW_REV_T5S_2_8) {
-          display->getTextBounds(buf, 0, 0, &tbx5, &tby5, &tbw5, &tbh5);
-          x = (display->width() - tbw5) / 2;
-          y += tbh4;
-          y += 7;
-          display->setCursor(x, y);
-          display->print(buf);
+	if (hw_info.revision == HW_REV_T5S_1_9 || hw_info.revision == HW_REV_T5S_2_8) {
+	  display->getTextBounds(buf, 0, 0, &tbx5, &tby5, &tbw5, &tbh5);
+	  x = (display->width() - tbw5) / 2;
+	  y += tbh4;
+	  y += 7;
+	  display->setCursor(x, y);
+	  display->print(buf);
         }
       }
+      */
     }
 
     display->display(false);

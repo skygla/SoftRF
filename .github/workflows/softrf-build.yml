@@ -25,12 +25,12 @@ jobs:
         run: |
           ls
           ./bin/arduino-cli compile -b esp32:esp32:esp32 -e --board-options FlashMode=dio,PartitionScheme=min_spiffs,DebugLevel=debug,PSRAM=enabled --libraries software/firmware/source/libraries software/firmware/source/SoftRF/SoftRF.ino
-          zip -j SoftRF-esp32-${{ github.refname }}.zip software/firmware/source/SoftRF/build/esp32.esp32.esp32/*
+          ./bin/arduino-cli compile -b esp32:esp32:esp32 -e --board-options FlashMode=dio,PartitionScheme=min_spiffs,PSRAM=enabled --libraries software/firmware/source/libraries software/firmware/source/SkyView/SkyView.ino
       - name: upload
         uses: actions/upload-artifact@v4
         with:
-          name: SoftRF-esp32-${{ github.refname }}
+          name: SoftRF-esp32-${{ github.ref_name }}
           path: |
             software/firmware/source/SoftRF/build/esp32.esp32.esp32/
-            SoftRF-esp32-${{ github.refname }}.zip
+            software/firmware/source/SkyView/build/esp32.esp32.esp32/
         if: ${{ always() }}

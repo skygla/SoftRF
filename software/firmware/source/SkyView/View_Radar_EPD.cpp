@@ -45,6 +45,8 @@ static navbox_t navbox4;
 
 static int EPD_zoom = ZOOM_MEDIUM;
 
+static time_t start_time;
+
 #define ICON_AIRPLANE
 
 #if defined(ICON_AIRPLANE)
@@ -110,9 +112,23 @@ static void EPD_Draw_NavBoxes()
 
     display->setFont(&FreeSerifBold12pt7b);
 
-    display->setCursor(navbox2.x + 8, navbox2.y + 30);
-    display->print(navbox2.value == PROTOCOL_NMEA  ? "NMEA" :
-                   navbox2.value == PROTOCOL_GDL90 ? " GDL" : " UNK" );
+    {
+      static int i = 5;
+      static char s[6];
+      if (nmea.time.isValid()) {
+	snprintf(s, sizeof(s), "%2d:%02d",
+		 nmea.time.hour(),
+		 nmea.time.minute());
+      }
+      else {
+	snprintf(s, sizeof(s), "$%d", i++);
+      }
+      
+      display->setCursor(navbox2.x + 8, navbox2.y + 30);
+      //      display->print(navbox2.value == PROTOCOL_NMEA  ? "NMEA" :
+      //	     navbox2.value == PROTOCOL_GDL90 ? " GDL" : " UNK" );
+      display->print(s);
+    }
   }
 
   uint16_t bottom_navboxes_x = navbox3.x;
