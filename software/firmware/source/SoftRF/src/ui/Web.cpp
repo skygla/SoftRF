@@ -2364,11 +2364,11 @@ void Web_setup()
 <html>\
   <head>\
     <meta name='viewport' content='width=device-width, initial-scale=1'>\
-    <title>Firmware update</title>\
+    <title>SoftRF update</title>\
   </head>\
 <body>\
 <body>\
- <h1 align=center>Firmware update</h1>\
+ <h1 align=center>SoftRF update</h1>\
  <hr>\
  <table width=100%%>\
   <tr>\
